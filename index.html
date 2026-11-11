@@ -277,7 +277,9 @@ async function initStorage(){
   if(hasLocalStorage()) await migrateFromLocalStorage();
 }
 /* 移し終えた localStorage のデータは消す。
-   残したままだと「完全削除」した写真が localStorage に残り、次回起動時に IndexedDB へ書き戻されてしまうため。 */
+   残したままだと「完全削除」した写真が localStorage に残り、次回起動時に IndexedDB へ書き戻されてしまうため。
+   GitHub Pages では同じアカウントの別アプリ（T-Map など）と localStorage を共有するので、
+   この一覧から参照されていない "photo:" キーには触れない（他アプリのデータの可能性がある）。 */
 async function migrateFromLocalStorage(){
   const keys=[];
   for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k.startsWith("goshuin:")||k.startsWith("photo:")) keys.push(k); }
@@ -288,20 +290,18 @@ async function migrateFromLocalStorage(){
   for(const k of keys.filter(k=>!isPhotoKey(k))){
     if(!await idbHas(k)) await idbDo("readwrite",s=>s.put(localStorage.getItem(k),k));
   }
-  // 2) IndexedDB 側の一覧から、まだ使われている写真の id を集める
+  // 2) IndexedDB 側の一覧から、この一覧が使っている写真の id を集める。一覧が読めないときは何もしない
   let ids=null;
   try{ const raw=await idbDo("readonly",s=>s.get(IDX_KEY)); if(raw) ids=new Set((JSON.parse(raw).items||[]).map(i=>i.id)); }catch(e){ ids=null; }
-  // 3) 写真を移す。一覧にない写真（完全削除済み）は移さない。一覧が読めないときは従来どおりすべて移す
-  for(const k of keys.filter(isPhotoKey)){
-    if(await idbHas(k)) continue;
-    if(ids&&!ids.has(k.slice(6))) continue;
-    await idbDo("readwrite",s=>s.put(localStorage.getItem(k),k));
-  }
-  // 4) 一覧が読めたときだけ localStorage を片付ける（IndexedDB に入ったものと、不要な写真だけ消す）
   if(!ids) return;
-  for(const k of keys){
-    const unused=isPhotoKey(k)&&!ids.has(k.slice(6));
-    if(unused||await idbHas(k)){ try{ localStorage.removeItem(k); }catch(e){} }
+  // 3) 一覧にある写真だけ移す。一覧にない写真（完全削除済み・他アプリのもの）は移さない
+  const own=keys.filter(k=>!isPhotoKey(k)||ids.has(k.slice(6)));
+  for(const k of own.filter(isPhotoKey)){
+    if(!await idbHas(k)) await idbDo("readwrite",s=>s.put(localStorage.getItem(k),k));
+  }
+  // 4) IndexedDB に入ったことを確認できたものだけ localStorage から消す
+  for(const k of own){
+    if(await idbHas(k)){ try{ localStorage.removeItem(k); }catch(e){} }
   }
 }
 async function sGet(k){
@@ -316,7 +316,7 @@ async function sSet(k,v){
 }
 async function sDel(k){
   if(window.storage){ try{await window.storage.delete(k,false);}catch(e){} return; }
-  if(idb){ await idbDo("readwrite",s=>s.delete(k)); return; }
+  if(idb){ await idbDo("readwrite",s=>s.delete(k)); try{ localStorage.removeItem(k); }catch(e){} return; }   // 移行前の古いコピーが残っていればそれも消す
   try{ localStorage.removeItem(k); }catch(e){}
 }
 
